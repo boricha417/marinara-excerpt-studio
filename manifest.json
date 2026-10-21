@@ -1,0 +1,14 @@
+{
+  "kind": "marinara.personal-extension",
+  "version": 1,
+  "config": {
+    "name": "발췌 스튜디오",
+    "version": "1.0.0",
+    "description": "채팅에서 드래그한 문장을 형광펜·밑줄·검열·치환·질감 배경·작품명 표기로 꾸며 PNG 이미지로 저장합니다.",
+    "runtime": "client",
+    "enabled": false,
+    "capabilities": ["full_page_access"],
+    "cssPath": "extension.css",
+    "jsPath": "extension.js"
+  }
+}
