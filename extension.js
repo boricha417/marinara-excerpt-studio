@@ -71,16 +71,44 @@
   function highlightColor(type) {
     return type === CUSTOM_KEY ? state.customColor : HIGHLIGHTS[type].color;
   }
-  /** 밑줄 색. 직접 선택은 얇은 선이라 같은 색을 조금 짙게 쓴다. */
+  /** 밑줄 색. 직접 선택은 얇은 선이라 기본 4색과 같은 규칙으로 짙게 만든다. */
   function underlineColor(type) {
-    return type === `u${CUSTOM_KEY}` ? darkenHex(state.customColor, 0.72) : UNDERLINES[type].color;
+    return type === `u${CUSTOM_KEY}` ? underlineFromHighlight(state.customColor) : UNDERLINES[type].color;
   }
-  function darkenHex(hex, factor) {
+  /**
+   * 형광펜 색 → 밑줄 색. 기본 4색(노랑 #FFDF7E→#E0A93E 등)처럼 색상(hue)은 두고
+   * 명도만 56% 이하로 내리고 채도는 45~72% 사이로 맞춘다. RGB를 일괄로 줄이면
+   * 파스텔은 채도까지 빠져 회색빛이 되기 때문. 회색 계열(채도 15% 미만)은 그대로 어둡게만.
+   */
+  function underlineFromHighlight(hex) {
     const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
     if (!m) return "#4A8FD4";
     const n = parseInt(m[1], 16);
-    const ch = (v) => Math.max(0, Math.min(255, Math.round(v * factor))).toString(16).padStart(2, "0");
-    return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+    const r = (n >> 16) / 255;
+    const g = ((n >> 8) & 255) / 255;
+    const b = (n & 255) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const d = max - min;
+    let h = 0;
+    let s = 0;
+    if (d > 0) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h = (h * 60 + 360) % 360;
+    }
+    const l2 = Math.min(l, 0.56);
+    const s2 = s < 0.15 ? s : Math.min(Math.max(s, 0.45), 0.72); // 기본 4색의 채도 범위(약 30~72%)에 맞춤
+    const c = (1 - Math.abs(2 * l2 - 1)) * s2;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m0 = l2 - c / 2;
+    const [r1, g1, b1] =
+      h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    const ch = (v) => Math.max(0, Math.min(255, Math.round((v + m0) * 255))).toString(16).padStart(2, "0");
+    return `#${ch(r1)}${ch(g1)}${ch(b1)}`;
   }
 
   const TEXTURES = {
