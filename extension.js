@@ -908,19 +908,28 @@
       listen(b, "mousedown", (e) => e.preventDefault());
       listen(b, "click", () => markSelection(markMode === "hl" ? key : `u${key}`));
       colorSwatches.push({ key, btn: b });
-      markRow.appendChild(b);
       if (key === CUSTOM_KEY) {
-        // 다섯 번째 견본의 색을 고르는 칸. 이미 이 견본으로 칠한 부분도 같이 바뀐다(대사 색과 같은 동작).
-        const customInput = el("input", "bs-color bs-swatch-picker");
+        // 직접 선택 견본: 견본을 누르면 칠하고, 모서리의 C 뱃지를 누르면 색을 고른다.
+        // 이미 이 견본으로 칠한 부분도 색을 바꾸면 같이 바뀐다(대사 색과 같은 동작).
+        b.classList.add("bs-swatch-custom");
+        const wrap = el("span", "bs-swatch-wrap");
+        const badge = el("label", "bs-swatch-badge", "C");
+        badge.title = "직접 선택 색 바꾸기";
+        const customInput = el("input", "bs-swatch-picker");
         customInput.type = "color";
         customInput.value = state.customColor;
-        customInput.title = "직접 선택 색 바꾸기";
+        listen(badge, "mousedown", (e) => e.preventDefault()); // 미리보기의 드래그 선택을 유지
         listen(customInput, "input", () => {
           state.customColor = customInput.value;
           updateSwatchLook();
           renderPreview();
         });
-        markRow.appendChild(customInput);
+        badge.appendChild(customInput);
+        wrap.appendChild(b);
+        wrap.appendChild(badge);
+        markRow.appendChild(wrap);
+      } else {
+        markRow.appendChild(b);
       }
     }
     updateSwatchLook();
