@@ -338,6 +338,7 @@
 
 .bs-mark-row {
   display: flex;
+  flex-wrap: wrap; /* 견본이 늘어 좁은 폭에서는 다음 줄로 */
   gap: 0.45rem;
   align-items: center;
 }
@@ -368,6 +369,7 @@
   border: 1px dashed #cfcdc8;
   width: auto;
   padding: 0 0.55rem;
+  white-space: nowrap;
 }
 .bs-swatch-erase:hover {
   color: #2f3437;
