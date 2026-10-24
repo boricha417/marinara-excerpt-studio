@@ -54,8 +54,10 @@
     g: { label: "초록", color: "#B9E6B0" },
     p: { label: "분홍", color: "#F9C6D9" },
     b: { label: "파랑", color: "#B4DAF7" },
+    c: { label: "직접 선택", color: null }, // 색은 state.customColor
   };
   const CENSOR = "censor";
+  const CUSTOM_KEY = "c";
 
   // 밑줄은 얇은 선이라 형광펜보다 짙은 색을 쓴다.
   const UNDERLINES = {
@@ -63,7 +65,23 @@
     ug: { color: "#5FA85A" },
     up: { color: "#D9648F" },
     ub: { color: "#4A8FD4" },
+    uc: { color: null }, // 직접 선택 색을 짙게
   };
+  /** 형광펜 색. 직접 선택은 고른 색 그대로. */
+  function highlightColor(type) {
+    return type === CUSTOM_KEY ? state.customColor : HIGHLIGHTS[type].color;
+  }
+  /** 밑줄 색. 직접 선택은 얇은 선이라 같은 색을 조금 짙게 쓴다. */
+  function underlineColor(type) {
+    return type === `u${CUSTOM_KEY}` ? darkenHex(state.customColor, 0.72) : UNDERLINES[type].color;
+  }
+  function darkenHex(hex, factor) {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return "#4A8FD4";
+    const n = parseInt(m[1], 16);
+    const ch = (v) => Math.max(0, Math.min(255, Math.round(v * factor))).toString(16).padStart(2, "0");
+    return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+  }
 
   const TEXTURES = {
     snow: { label: "화이트", base: "#FBFBFA", text: "#2F3437", grainDark: 0.02, grainLight: 0.0 },
@@ -99,6 +117,7 @@
     textColor: INK,
     dialogueEnabled: false,
     dialogueColor: "#9F2F2D",
+    customColor: "#CDBDF5", // 직접 선택 형광펜·밑줄 색 (브라우저에 기억)
     cornerRadius: 16,
     cardWidth: 640,
     heightMode: "auto", // 'auto' | 'fixed'
@@ -131,6 +150,7 @@
       if (typeof p.textColor === "string") state.textColor = p.textColor;
       if (typeof p.dialogueEnabled === "boolean") state.dialogueEnabled = p.dialogueEnabled;
       if (typeof p.dialogueColor === "string") state.dialogueColor = p.dialogueColor;
+      if (typeof p.customColor === "string" && /^#[0-9a-f]{6}$/i.test(p.customColor)) state.customColor = p.customColor;
       if (typeof p.cornerRadius === "number") state.cornerRadius = Math.min(60, Math.max(0, p.cornerRadius));
       if (typeof p.showTitle === "boolean") state.showTitle = p.showTitle;
       if (typeof p.showAuthor === "boolean") state.showAuthor = p.showAuthor;
@@ -185,6 +205,7 @@
           textColor: state.textColor,
           dialogueEnabled: state.dialogueEnabled,
           dialogueColor: state.dialogueColor,
+          customColor: state.customColor,
           cornerRadius: state.cornerRadius,
           showTitle: state.showTitle,
           showAuthor: state.showAuthor,
@@ -852,12 +873,12 @@
     function updateSwatchLook() {
       for (const { key, btn } of colorSwatches) {
         if (markMode === "hl") {
-          btn.style.background = HIGHLIGHTS[key].color;
+          btn.style.background = highlightColor(key);
           btn.style.borderBottom = "";
           btn.title = `형광펜 (${HIGHLIGHTS[key].label})`;
         } else {
           btn.style.background = "#ffffff";
-          btn.style.borderBottom = `5px solid ${UNDERLINES[`u${key}`].color}`;
+          btn.style.borderBottom = `5px solid ${underlineColor(`u${key}`)}`;
           btn.title = `밑줄 (${HIGHLIGHTS[key].label})`;
         }
       }
@@ -888,6 +909,19 @@
       listen(b, "click", () => markSelection(markMode === "hl" ? key : `u${key}`));
       colorSwatches.push({ key, btn: b });
       markRow.appendChild(b);
+      if (key === CUSTOM_KEY) {
+        // 다섯 번째 견본의 색을 고르는 칸. 이미 이 견본으로 칠한 부분도 같이 바뀐다(대사 색과 같은 동작).
+        const customInput = el("input", "bs-color bs-swatch-picker");
+        customInput.type = "color";
+        customInput.value = state.customColor;
+        customInput.title = "직접 선택 색 바꾸기";
+        listen(customInput, "input", () => {
+          state.customColor = customInput.value;
+          updateSwatchLook();
+          renderPreview();
+        });
+        markRow.appendChild(customInput);
+      }
     }
     updateSwatchLook();
     const censorBtn = el("button", "bs-swatch bs-swatch-censor", "가");
@@ -1447,11 +1481,11 @@
           span.className = "bs-mark-censor";
         } else if (UNDERLINES[type]) {
           span.className = "bs-mark-ul";
-          span.style.textDecorationColor = UNDERLINES[type].color;
+          span.style.textDecorationColor = underlineColor(type);
           if (inDialogue) span.style.color = state.dialogueColor;
         } else {
           span.className = "bs-mark-hl";
-          span.style.backgroundColor = HIGHLIGHTS[type].color;
+          span.style.backgroundColor = highlightColor(type);
         }
         previewText.appendChild(span);
       }
@@ -1749,10 +1783,10 @@
             ctx.fillRect(cx - 0.5, baseline - ascent - 1, chWidth + 1, ascent + descent + 2);
           } else if (type && HIGHLIGHTS[type]) {
             flushUl();
-            ctx.fillStyle = HIGHLIGHTS[type].color;
+            ctx.fillStyle = highlightColor(type);
             ctx.fillRect(cx - 0.5, baseline - ascent - 3, chWidth + 1, ascent + descent + 6);
           } else if (type && UNDERLINES[type]) {
-            const color = UNDERLINES[type].color;
+            const color = underlineColor(type);
             if (ulRun && ulRun.color === color) ulRun.x2 = cx + chWidth;
             else {
               flushUl();

@@ -372,6 +372,11 @@
 .bs-swatch-erase:hover {
   color: #2f3437;
 }
+.bs-swatch-picker {
+  width: 2.05rem;
+  height: 2.05rem;
+  padding: 0.15rem;
+}
 
 .bs-rules {
   display: flex;
