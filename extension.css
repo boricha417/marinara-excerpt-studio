@@ -408,6 +408,17 @@
   align-items: center;
   gap: 0.55rem;
 }
+.bs-revert {
+  flex-shrink: 0;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.bs-revert--off {
+  /* 숨겨도 자리는 남겨 제목·작가 입력칸 폭이 같게 (hidden 속성은 엔진 CSS가 display:none !important로 덮음) */
+  visibility: hidden;
+  pointer-events: none;
+}
 .bs-check {
   flex-shrink: 0;
   width: 1rem;

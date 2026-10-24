@@ -13,8 +13,20 @@
   // 정리(cleanup) 관리
   // ──────────────────────────────────────────────
   const cleanups = [];
+  // 모달이 열려 있는 동안 등록된 정리 항목. 닫을 때 바로 실행해서 모달을 열 때마다
+  // 리스너·타이머·DOM 참조가 확장 수명 내내 쌓이지 않게 한다.
+  let modalCleanups = null;
   function onCleanup(fn) {
-    cleanups.push(fn);
+    (modalCleanups || cleanups).push(fn);
+  }
+  function runCleanups(list) {
+    for (const fn of list.splice(0)) {
+      try {
+        fn();
+      } catch {
+        /* 무시 */
+      }
+    }
   }
   function listen(target, type, handler, options) {
     target.addEventListener(type, handler, options);
@@ -22,13 +34,9 @@
   }
   if (typeof marinara !== "undefined" && marinara.onCleanup) {
     marinara.onCleanup(() => {
-      for (const fn of cleanups.splice(0)) {
-        try {
-          fn();
-        } catch {
-          /* 무시 */
-        }
-      }
+      if (modalCleanups) runCleanups(modalCleanups);
+      modalCleanups = null;
+      runCleanups(cleanups);
     });
   }
 
@@ -37,6 +45,8 @@
   // ──────────────────────────────────────────────
   const PREFS_KEY = "bs-studio-prefs-v2";
   const ACTIVE_CHAT_KEY = "marinara-active-chat-id";
+  const DEFAULT_AUTHOR = "MARINARA";
+  const MAX_TITLE_OVERRIDES = 100; // 방별로 기억하는 작품명 수 (넘치면 오래된 것부터 버림)
   const INK = "#2F3437";
 
   const HIGHLIGHTS = {
@@ -97,7 +107,10 @@
     showTitle: true,
     showAuthor: true,
     titleText: "",
-    authorText: "MARINARA",
+    authorText: DEFAULT_AUTHOR,
+    titleOverrides: {}, // 채팅방 id → 고쳐 쓴 작품명 (방 이름과 다를 때만 저장)
+    chatId: "", // 이번 모달의 채팅방 id
+    chatName: "", // 이번 모달의 채팅방 이름 (감지 전엔 "")
     replaceRules: [], // { find, replace }
     bg: { mode: "texture", color: "#FFFFFF", texture: "cream", pattern: "grain", imageData: null, dim: 0, bright: 0 },
   };
@@ -122,6 +135,13 @@
       if (typeof p.showTitle === "boolean") state.showTitle = p.showTitle;
       if (typeof p.showAuthor === "boolean") state.showAuthor = p.showAuthor;
       if (typeof p.authorText === "string") state.authorText = p.authorText;
+      if (p.titleOverrides && typeof p.titleOverrides === "object" && !Array.isArray(p.titleOverrides)) {
+        state.titleOverrides = Object.fromEntries(
+          Object.entries(p.titleOverrides)
+            .filter(([k, v]) => typeof k === "string" && k && typeof v === "string")
+            .slice(-MAX_TITLE_OVERRIDES),
+        );
+      }
       if (Array.isArray(p.replaceRules)) {
         state.replaceRules = p.replaceRules
           .filter((r) => r && typeof r.find === "string" && typeof r.replace === "string")
@@ -138,7 +158,18 @@
       /* 무시 */
     }
   }
+  /** 작품명이 채팅방 이름과 다르면 그 방의 것으로 기억하고, 같으면(또는 되돌리면) 기억을 지운다. */
+  function rememberTitleOverride() {
+    if (!state.chatId) return;
+    const isDefault = state.chatName ? state.titleText === state.chatName : state.titleText === "";
+    delete state.titleOverrides[state.chatId]; // 다시 넣어 가장 최근 것으로 올린다
+    if (isDefault) return;
+    state.titleOverrides[state.chatId] = state.titleText;
+    const keys = Object.keys(state.titleOverrides);
+    for (const k of keys.slice(0, Math.max(0, keys.length - MAX_TITLE_OVERRIDES))) delete state.titleOverrides[k];
+  }
   function savePrefs() {
+    rememberTitleOverride();
     try {
       localStorage.setItem(
         PREFS_KEY,
@@ -158,6 +189,7 @@
           showTitle: state.showTitle,
           showAuthor: state.showAuthor,
           authorText: state.authorText,
+          titleOverrides: state.titleOverrides,
           replaceRules: state.replaceRules,
           bg: {
             mode: state.bg.mode === "image" ? "texture" : state.bg.mode,
@@ -362,15 +394,19 @@
   // ──────────────────────────────────────────────
   // 채팅방 이름 감지
   // ──────────────────────────────────────────────
-  async function detectChatTitle() {
+  function activeChatId() {
     try {
-      const id = localStorage.getItem(ACTIVE_CHAT_KEY);
+      return localStorage.getItem(ACTIVE_CHAT_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+  async function detectChatTitle(id) {
+    try {
       if (!id) return "";
-      const res = await fetch("/api/chats", { credentials: "same-origin" });
+      const res = await fetch(`/api/chats/${encodeURIComponent(id)}`, { credentials: "same-origin" });
       if (!res.ok) return "";
-      const chats = await res.json();
-      if (!Array.isArray(chats)) return "";
-      const chat = chats.find((c) => c && c.id === id);
+      const chat = await res.json();
       return chat && typeof chat.name === "string" ? chat.name : "";
     } catch {
       return "";
@@ -417,7 +453,9 @@
   let currentAnnotation = null; // [{ ch, bs, be }]  bs·be = 원문 기준 구간
 
   function annotateReplaced(base, rules) {
-    let chars = Array.from(base, (ch, i) => ({ ch, bs: i, be: i + 1 }));
+    // UTF-16 코드 유닛 단위로 쪼갠다. 마크 위치·토큰 index·startsWith가 모두 코드 유닛 기준이라
+    // Array.from(코드 포인트 단위)을 쓰면 이모지 뒤부터 위치가 어긋난다.
+    let chars = Array.from({ length: base.length }, (_, i) => ({ ch: base[i], bs: i, be: i + 1 }));
     for (const rule of rules) {
       if (!rule.find) continue;
       const find = rule.find;
@@ -428,7 +466,7 @@
         if (str.startsWith(find, i)) {
           const bs = chars[i].bs;
           const be = chars[i + find.length - 1].be;
-          for (const rc of rule.replace) out.push({ ch: rc, bs, be });
+          for (let k = 0; k < rule.replace.length; k++) out.push({ ch: rule.replace[k], bs, be });
           i += find.length;
         } else {
           out.push(chars[i]);
@@ -608,6 +646,7 @@
   function openModal(text) {
     if (modalOpen) return;
     modalOpen = true;
+    modalCleanups = [];
     state.baseText = text;
     state.marks = [];
     state.bg.imageData = null;
@@ -615,7 +654,11 @@
     state.bg.bright = 0;
     loadPrefs();
     applyRulesWithAnnotation();
-    state.titleText = "";
+    state.chatId = activeChatId();
+    state.chatName = "";
+    // 이 방에서 고쳐 쓴 작품명이 있으면 그걸로 시작하고, 없으면 채팅방 이름이 오면 채운다
+    const rememberedTitle = state.chatId ? state.titleOverrides[state.chatId] : undefined;
+    state.titleText = typeof rememberedTitle === "string" ? rememberedTitle : "";
     if (state.bg.mode === "texture") state.textColor = TEXTURES[state.bg.texture].text;
 
     overlay = el("div", "bs-overlay");
@@ -932,20 +975,34 @@
     const titleInput = el("input", "bs-input");
     titleInput.type = "text";
     titleInput.placeholder = "작품명 (채팅방 이름)";
+    titleInput.value = state.titleText;
+    // 채팅방 이름과 다를 때만 보이는 되돌리기 버튼
+    const titleRevert = el("button", "bs-icon-btn bs-revert", "↺");
+    titleRevert.type = "button";
+    titleRevert.title = "채팅방 이름으로 되돌리기";
+    const syncTitleRevert = () => {
+      titleRevert.classList.toggle("bs-revert--off", !state.chatName || titleInput.value === state.chatName);
+    };
+    syncTitleRevert();
     listen(titleCheck, "change", () => {
       state.showTitle = titleCheck.checked;
       renderPreview();
     });
-    listen(
-      titleInput,
-      "input",
-      debounce(() => {
-        state.titleText = titleInput.value;
-        renderPreview();
-      }, 200),
-    );
+    const renderTitleSoon = debounce(() => renderPreview(), 200);
+    listen(titleInput, "input", () => {
+      state.titleText = titleInput.value; // 상태는 즉시 반영 (닫기 직전 입력이 저장에서 빠지지 않도록)
+      syncTitleRevert();
+      renderTitleSoon();
+    });
+    listen(titleRevert, "click", () => {
+      titleInput.value = state.chatName;
+      state.titleText = state.chatName;
+      syncTitleRevert();
+      renderPreview();
+    });
     titleRow.appendChild(titleCheck);
     titleRow.appendChild(titleInput);
+    titleRow.appendChild(titleRevert);
     controls.appendChild(titleRow);
 
     const authorRow = el("div", "bs-check-row");
@@ -961,16 +1018,28 @@
       state.showAuthor = authorCheck.checked;
       renderPreview();
     });
-    listen(
-      authorInput,
-      "input",
-      debounce(() => {
-        state.authorText = authorInput.value;
-        renderPreview();
-      }, 200),
-    );
+    const authorRevert = el("button", "bs-icon-btn bs-revert", "↺");
+    authorRevert.type = "button";
+    authorRevert.title = `기본값(${DEFAULT_AUTHOR})으로 되돌리기`;
+    const syncAuthorRevert = () => {
+      authorRevert.classList.toggle("bs-revert--off", authorInput.value === DEFAULT_AUTHOR);
+    };
+    syncAuthorRevert();
+    const renderAuthorSoon = debounce(() => renderPreview(), 200);
+    listen(authorInput, "input", () => {
+      state.authorText = authorInput.value;
+      syncAuthorRevert();
+      renderAuthorSoon();
+    });
+    listen(authorRevert, "click", () => {
+      authorInput.value = DEFAULT_AUTHOR;
+      state.authorText = DEFAULT_AUTHOR;
+      syncAuthorRevert();
+      renderPreview();
+    });
     authorRow.appendChild(authorCheck);
     authorRow.appendChild(authorInput);
+    authorRow.appendChild(authorRevert);
     controls.appendChild(authorRow);
 
     // ══ 배경 ═══════════════════════════════════
@@ -1220,13 +1289,15 @@
           .catch(() => {});
       }
     });
-    detectChatTitle().then((name) => {
+    detectChatTitle(state.chatId).then((name) => {
       if (!modalOpen) return;
-      if (name && !titleInput.value) {
+      state.chatName = name;
+      if (name && typeof rememberedTitle !== "string") {
         titleInput.value = name;
         state.titleText = name;
         renderPreview();
       }
+      syncTitleRevert();
     });
   }
 
@@ -1243,6 +1314,8 @@
     savePrefs();
     document.removeEventListener("keydown", escToClose, true);
     if (overlay) overlay.remove();
+    if (modalCleanups) runCleanups(modalCleanups);
+    modalCleanups = null;
     overlay = previewCard = previewBodyWrap = previewText = previewFooter = statusLine = rulesBox = null;
   }
 
@@ -1447,12 +1520,20 @@
   // ──────────────────────────────────────────────
   // PNG 저장 (캔버스에 직접 그리기)
   // ──────────────────────────────────────────────
+  /** k 위치의 글자 하나. 서로게이트 쌍(이모지 등)은 두 코드 유닛을 한 글자로 돌려준다. */
+  function glyphAt(str, k) {
+    const cp = str.codePointAt(k);
+    return cp > 0xffff ? str.slice(k, k + 2) : str[k];
+  }
+
   function tokenizeParagraph(paragraph, baseIndex) {
     const tokens = [];
     let i = 0;
     while (i < paragraph.length) {
       const ch = paragraph[i];
-      if (ch === " " || ch === "\t") {
+      if (/\s/.test(ch)) {
+        // NBSP·\r 같은 공백 문자도 공백 토큰으로 본다. 아래 단어 루프가 \s에서 멈추므로
+        // 여기서 받지 않으면 빈 토큰만 쌓이고 i가 전진하지 않아 무한 루프에 빠진다.
         tokens.push({ kind: "space", text: " ", index: baseIndex + i });
         i += 1;
       } else if (CJK_RE.test(ch)) {
@@ -1496,19 +1577,21 @@
         if (entry.width > maxWidth && entry.kind === "word") {
           let piece = "";
           let pieceStart = entry.index;
-          for (let k = 0; k < entry.text.length; k++) {
-            const next = piece + entry.text[k];
+          for (let k = 0; k < entry.text.length; ) {
+            const glyph = glyphAt(entry.text, k);
+            const next = piece + glyph;
             if (widthOf(next) > maxWidth && piece) {
               const pw = widthOf(piece);
               if (lineWidth + pw > maxWidth && line.length > 0) pushLine(false);
               line.push({ kind: "word", text: piece, index: pieceStart, width: pw });
               lineWidth += pw;
               pushLine(false);
-              piece = entry.text[k];
+              piece = glyph;
               pieceStart = entry.index + k;
             } else {
               piece = next;
             }
+            k += glyph.length;
           }
           if (piece) {
             const pw = widthOf(piece);
@@ -1656,8 +1739,9 @@
       for (const token of line.tokens) {
         const tokenWidth = token.width + (token.kind === "space" ? spaceExtra : 0);
         let cx = x;
-        for (let k = 0; k < token.text.length; k++) {
-          const chWidth = token.text.length === 1 ? tokenWidth : measure.measureText(token.text[k]).width;
+        for (let k = 0; k < token.text.length; ) {
+          const glyph = glyphAt(token.text, k);
+          const chWidth = token.text.length === glyph.length ? tokenWidth : measure.measureText(glyph).width;
           const type = markAt(token.index + k);
           if (type === CENSOR) {
             flushUl();
@@ -1678,6 +1762,7 @@
             flushUl();
           }
           cx += chWidth;
+          k += glyph.length;
         }
         x += tokenWidth;
       }
@@ -1705,13 +1790,15 @@
             }
           } else {
             let cx = x;
-            for (let k = 0; k < token.text.length; k++) {
-              const chWidth = measure.measureText(token.text[k]).width;
+            for (let k = 0; k < token.text.length; ) {
+              const glyph = glyphAt(token.text, k);
+              const chWidth = measure.measureText(glyph).width;
               if (markAt(token.index + k) !== CENSOR) {
                 ctx.fillStyle = inkFor(token.index + k);
-                ctx.fillText(token.text[k], cx, baseline);
+                ctx.fillText(glyph, cx, baseline);
               }
               cx += chWidth;
+              k += glyph.length;
             }
           }
         }
